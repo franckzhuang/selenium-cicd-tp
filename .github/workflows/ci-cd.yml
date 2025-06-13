@@ -3,12 +3,9 @@ name: CI/CD Pipeline with Selenium Tests
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*' ]    # Déclenche aussi sur push de tags commençant par 'v'
   pull_request:
     branches: [ main ]
-  # Pour permettre le déploiement sur tags
-  create:
-    tags:
-      - '*'
 
 jobs:
   test:
@@ -16,7 +13,6 @@ jobs:
     strategy:
       matrix:
         browser: [chrome, firefox]
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,58 +22,59 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install browser
-        run: |
-          if [ "${{ matrix.browser }}" = "firefox" ]; then
-            sudo apt-get update
-            sudo apt-get install -y firefox
-          else
-            sudo apt-get update
-            sudo apt-get install -y google-chrome-stable
-          fi
-
       - name: Install dependencies
         run: |
           cd tests
           pip install -r requirements.txt
 
+      - name: Install Chrome
+        if: matrix.browser == 'chrome'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Install Firefox
+        if: matrix.browser == 'firefox'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y firefox
+
       - name: Run Selenium Tests
         env:
           CI: true
-          SELENIUM_BROWSER: ${{ matrix.browser }}
+          BROWSER: ${{ matrix.browser }}
         run: |
           cd tests
           python -m pytest test_selenium.py -v --html=../test-report-${{ matrix.browser }}.html --self-contained-html
 
       - name: Upload test results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: test-results-${{ matrix.browser }}
           path: test-report-${{ matrix.browser }}.html
 
-      - name: Send email on failure
-        if: failure()
+  notify-on-failure:
+    needs: test
+    runs-on: ubuntu-latest
+    if: failure()    # Ce job ne s’exécute que si "test" a échoué
+    steps:
+      - name: Send Email
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 465
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: "[CI/CD] Selenium tests failed on ${{ github.repository }} (${{ matrix.browser }})"
-          to: ${{ secrets.MAIL_RECEIVER }}
+          subject: "Echec des tests Selenium sur ${{ github.repository }}"
+          body: "Consultez le run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.MAIL_USERNAME }}
-          body: |
-            The Selenium CI/CD tests failed for browser: ${{ matrix.browser }}.
-            Repository: ${{ github.repository }}
-            Branch/Ref: ${{ github.ref }}
-            Commit: ${{ github.sha }}
-            See GitHub Actions for details.
-          secure: true
 
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')    # Déploiement uniquement si c'est un tag v*
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
