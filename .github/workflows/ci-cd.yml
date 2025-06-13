@@ -2,13 +2,20 @@ name: CI/CD Pipeline with Selenium Tests
 
 on:
   push:
-    branches: [main, develop]
+    branches: [ main, develop ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
+  # Pour permettre le déploiement sur tags
+  create:
+    tags:
+      - '*'
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        browser: [chrome, firefox]
 
     steps:
       - name: Checkout code
@@ -19,10 +26,15 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Chrome
+      - name: Install browser
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
+          if [ "${{ matrix.browser }}" = "firefox" ]; then
+            sudo apt-get update
+            sudo apt-get install -y firefox
+          else
+            sudo apt-get update
+            sudo apt-get install -y google-chrome-stable
+          fi
 
       - name: Install dependencies
         run: |
@@ -32,21 +44,40 @@ jobs:
       - name: Run Selenium Tests
         env:
           CI: true
+          SELENIUM_BROWSER: ${{ matrix.browser }}
         run: |
           cd tests
-          python -m pytest test_selenium.py -v --html=../test-report.html --self-contained-html
+          python -m pytest test_selenium.py -v --html=../test-report-${{ matrix.browser }}.html --self-contained-html
 
       - name: Upload test results
-        if: always()
         uses: actions/upload-artifact@v3
         with:
-          name: test-results
-          path: test-report.html
+          name: test-results-${{ matrix.browser }}
+          path: test-report-${{ matrix.browser }}.html
+
+      - name: Send email on failure
+        if: failure()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "[CI/CD] Selenium tests failed on ${{ github.repository }} (${{ matrix.browser }})"
+          to: ${{ secrets.MAIL_RECEIVER }}
+          from: ${{ secrets.MAIL_USERNAME }}
+          body: |
+            The Selenium CI/CD tests failed for browser: ${{ matrix.browser }}.
+            Repository: ${{ github.repository }}
+            Branch/Ref: ${{ github.ref }}
+            Commit: ${{ github.sha }}
+            See GitHub Actions for details.
+          secure: true
 
   deploy:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
